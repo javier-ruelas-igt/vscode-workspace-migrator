@@ -303,7 +303,8 @@ if ($WhatIfPreference) { Write-Host "  Mode         : DRY RUN (WhatIf)" -Foregro
 else                    { Write-Host "  Mode         : LIVE"              -ForegroundColor Green  }
 
 # Locate Node.js and VS Code's sqlite3 module for state.vscdb migration
-$nodeExe       = (Get-Command node -ErrorAction SilentlyContinue)?.Source
+$_nodeCmd      = Get-Command node -ErrorAction SilentlyContinue
+$nodeExe       = if ($_nodeCmd) { $_nodeCmd.Source } else { $null }
 $sqliteModule  = if ($nodeExe) { Find-VsCodeSqliteModule } else { $null }
 
 if (-not $nodeExe) {
