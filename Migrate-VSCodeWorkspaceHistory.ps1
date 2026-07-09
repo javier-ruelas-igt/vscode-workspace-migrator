@@ -181,10 +181,24 @@ function replacePaths(str) {
     return str;
 }
 
-const oldDb = new sqlite3.Database(oldDbPath, sqlite3.OPEN_READONLY);
-const newDb = new sqlite3.Database(newDbPath, sqlite3.OPEN_READWRITE);
+const oldDb = new sqlite3.Database(oldDbPath, sqlite3.OPEN_READONLY, (err) => {
+    if (err) { process.stderr.write('Cannot open old DB: ' + err.message + '\n'); process.exit(1); }
+});
+const newDb = new sqlite3.Database(newDbPath, sqlite3.OPEN_READWRITE, (err) => {
+    if (err) { process.stderr.write('Cannot open new DB: ' + err.message + '\n'); process.exit(1); }
+});
 
-function done() { oldDb.close(); newDb.close(); }
+// Close DBs sequentially with callbacks so Node waits for SQLite to flush before exiting.
+// Without callbacks, the event loop can exit before the write-ahead log is checkpointed.
+function done() {
+    newDb.close(function(err) {
+        if (err) process.stderr.write('Error closing new DB: ' + err.message + '\n');
+        oldDb.close(function(err2) {
+            if (err2) process.stderr.write('Error closing old DB: ' + err2.message + '\n');
+            process.exit(0);
+        });
+    });
+}
 
 function processKeys(keys, idx) {
     if (idx >= keys.length) { done(); return; }
