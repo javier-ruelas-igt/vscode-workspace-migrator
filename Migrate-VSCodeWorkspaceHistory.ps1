@@ -430,7 +430,7 @@ foreach ($folder in $allFolders) {
 
         $dstDir = Join-Path $newFolder $subDir
 
-        $files = Get-ChildItem -Path $srcDir -File -Recurse
+        $files = @(Get-ChildItem -Path $srcDir -File -Recurse)
         if ($files.Count -eq 0) { continue }
 
         foreach ($file in $files) {
