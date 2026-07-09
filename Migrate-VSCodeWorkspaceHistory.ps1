@@ -280,6 +280,25 @@ if ($TestMode) {
     Write-Host ""
 }
 
+# Warn if VS Code is running — it will overwrite state.vscdb on reload, undoing DB migration
+if (-not $TestMode -and -not $WhatIfPreference) {
+    $vscodeProcs = Get-Process -Name "Code" -ErrorAction SilentlyContinue
+    if ($vscodeProcs) {
+        Write-Host ""
+        Write-Host "  [WARN] VS Code is currently running!" -ForegroundColor Red
+        Write-Host "         The state.vscdb files are held open by VS Code." -ForegroundColor Red
+        Write-Host "         If you reload any VS Code window after this script runs," -ForegroundColor Red
+        Write-Host "         VS Code will overwrite the migrated chat session index." -ForegroundColor Red
+        Write-Host "         CLOSE VS CODE COMPLETELY before running this migration." -ForegroundColor Red
+        Write-Host ""
+        $response = Read-Host "Continue anyway? (y/N)"
+        if ($response -notmatch '^[Yy]') {
+            Write-Host "Aborted. Close VS Code and re-run the script." -ForegroundColor Yellow
+            exit 0
+        }
+    }
+}
+
 if (-not (Test-Path $VSCodeStoragePath -PathType Container)) {
     Write-Error "VS Code storage path not found: $VSCodeStoragePath"
     exit 1
