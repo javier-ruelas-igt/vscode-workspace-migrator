@@ -113,6 +113,150 @@ function Uri-ToLocalPath ([string]$uri) {
     return $decoded
 }
 
+# Locate VS Code's bundled @vscode/sqlite3 Node module.
+# VS Code installs to <base>/<hash>/resources/app/node_modules/@vscode/sqlite3
+function Find-VsCodeSqliteModule {
+    $codeCmd = Get-Command code -ErrorAction SilentlyContinue
+    if (-not $codeCmd) { return $null }
+
+    # code (or code.cmd) lives in <install>\bin\  -- go up one level
+    $binDir     = Split-Path $codeCmd.Source -Parent
+    $installDir = Split-Path $binDir -Parent
+
+    # The hash sub-folder name is a hex string
+    $hashDir = Get-ChildItem $installDir -Directory |
+               Where-Object { $_.Name -match '^[0-9a-fA-F]{6,}$' } |
+               Select-Object -First 1
+    if (-not $hashDir) { return $null }
+
+    $candidate = Join-Path $hashDir.FullName "resources\app\node_modules\@vscode\sqlite3"
+    if (Test-Path (Join-Path $candidate "lib\sqlite3.js")) { return $candidate }
+    return $null
+}
+
+# Migrate the chat session index (and a few other keys) from old state.vscdb to new.
+# The critical key is chat.ChatSessionStore.index – without it VS Code shows no sessions
+# even though the .jsonl files are present.
+function Invoke-StateDatabaseMigration {
+    param(
+        [string] $OldDbPath,
+        [string] $NewDbPath,
+        [string] $OldPathPrefix,
+        [string] $NewPathPrefix,
+        [string] $NodeExe,
+        [string] $SqliteModulePath
+    )
+
+    if (-not (Test-Path $OldDbPath)) { return }
+    if (-not (Test-Path $NewDbPath)) { return }
+
+    # Inline Node.js script written to a temp file so we avoid quoting nightmares
+    $nodeScript = @'
+const sqlite3 = require(process.env.SQLITE_MODULE);
+const oldDbPath  = process.env.OLD_DB;
+const newDbPath  = process.env.NEW_DB;
+const oldPrefix  = process.env.OLD_PREFIX;
+const newPrefix  = process.env.NEW_PREFIX;
+
+// Keys whose JSON "entries" object should be merged (old+new) rather than replaced.
+const MERGE_KEYS = ['chat.ChatSessionStore.index'];
+// Keys to copy from old if missing in new (or if old has substantially more data).
+const COPY_KEYS  = [
+    'agentSessions.state.cache',
+    'agentSessions.readDateBaseline2',
+    'workbench.view.chat.sessions.state',
+    'memento/interactive-session-view-copilot'
+];
+
+function replacePaths(str) {
+    function escRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+    // JSON-escaped backslash form:  C:\\Workspace\\  ->  C:\\IGTTools\\
+    const oldJson = oldPrefix.replace(/\\/g, '\\\\');
+    const newJson = newPrefix.replace(/\\/g, '\\\\');
+    str = str.replace(new RegExp(escRe(oldJson), 'gi'), newJson);
+    // Forward-slash form:  C:/Workspace/  ->  C:/IGTTools/
+    const oldFwd = oldPrefix.replace(/\\/g, '/');
+    const newFwd = newPrefix.replace(/\\/g, '/');
+    str = str.replace(new RegExp(escRe(oldFwd), 'gi'), newFwd);
+    return str;
+}
+
+const oldDb = new sqlite3.Database(oldDbPath, sqlite3.OPEN_READONLY);
+const newDb = new sqlite3.Database(newDbPath, sqlite3.OPEN_READWRITE);
+
+function done() { oldDb.close(); newDb.close(); }
+
+function processKeys(keys, idx) {
+    if (idx >= keys.length) { done(); return; }
+    const key = keys[idx];
+    const next = () => processKeys(keys, idx + 1);
+
+    oldDb.get('SELECT value FROM ItemTable WHERE key = ?', [key], (err, oldRow) => {
+        if (err || !oldRow) { next(); return; }
+
+        const oldFixed = replacePaths(oldRow.value.toString());
+
+        newDb.get('SELECT value FROM ItemTable WHERE key = ?', [key], (err2, newRow) => {
+            let finalValue;
+
+            if (MERGE_KEYS.includes(key)) {
+                try {
+                    const oldParsed = JSON.parse(oldFixed);
+                    if (newRow) {
+                        const newParsed = JSON.parse(newRow.value.toString());
+                        // Merge entries: old provides base, new takes priority on conflicts
+                        const merged = Object.assign({}, oldParsed.entries || {}, newParsed.entries || {});
+                        finalValue = JSON.stringify(Object.assign({}, newParsed, { entries: merged }));
+                    } else {
+                        finalValue = oldFixed;
+                    }
+                } catch(e) {
+                    process.stderr.write('Merge error for ' + key + ': ' + e.message + '\n');
+                    next(); return;
+                }
+            } else {
+                // Copy only if old has more data than new (or new is missing it)
+                if (newRow && newRow.value.toString().length >= oldFixed.length) { next(); return; }
+                finalValue = oldFixed;
+            }
+
+            newDb.run('INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)',
+                      [key, finalValue], (err3) => {
+                if (err3) process.stderr.write('Write error for ' + key + ': ' + err3.message + '\n');
+                else      process.stdout.write('  DB-OK  ' + key + '\n');
+                next();
+            });
+        });
+    });
+}
+
+processKeys([...MERGE_KEYS, ...COPY_KEYS], 0);
+'@
+
+    $tmpScript = Join-Path $env:TEMP "vscode_migrate_db_$([System.IO.Path]::GetRandomFileName()).js"
+    try {
+        Set-Content -Path $tmpScript -Value $nodeScript -Encoding UTF8
+
+        $env:SQLITE_MODULE = $SqliteModulePath
+        $env:OLD_DB        = $OldDbPath
+        $env:NEW_DB        = $NewDbPath
+        $env:OLD_PREFIX    = $OldPathPrefix
+        $env:NEW_PREFIX    = $NewPathPrefix
+
+        & $NodeExe $tmpScript
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "state.vscdb migration returned non-zero exit code for $OldDbPath"
+        }
+    } finally {
+        Remove-Item $tmpScript -ErrorAction SilentlyContinue
+        Remove-Item Env:\SQLITE_MODULE -ErrorAction SilentlyContinue
+        Remove-Item Env:\OLD_DB        -ErrorAction SilentlyContinue
+        Remove-Item Env:\NEW_DB        -ErrorAction SilentlyContinue
+        Remove-Item Env:\OLD_PREFIX    -ErrorAction SilentlyContinue
+        Remove-Item Env:\NEW_PREFIX    -ErrorAction SilentlyContinue
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Validate inputs
 # ---------------------------------------------------------------------------
@@ -157,6 +301,18 @@ Write-Host "  Old prefix   : $OldPathPrefix"
 Write-Host "  New prefix   : $NewPathPrefix"
 if ($WhatIfPreference) { Write-Host "  Mode         : DRY RUN (WhatIf)" -ForegroundColor Yellow }
 else                    { Write-Host "  Mode         : LIVE"              -ForegroundColor Green  }
+
+# Locate Node.js and VS Code's sqlite3 module for state.vscdb migration
+$nodeExe       = (Get-Command node -ErrorAction SilentlyContinue)?.Source
+$sqliteModule  = if ($nodeExe) { Find-VsCodeSqliteModule } else { $null }
+
+if (-not $nodeExe) {
+    Write-Host "  DB migration : DISABLED (node.exe not found in PATH)" -ForegroundColor Yellow
+} elseif (-not $sqliteModule) {
+    Write-Host "  DB migration : DISABLED (VS Code sqlite3 module not found)" -ForegroundColor Yellow
+} else {
+    Write-Host "  DB migration : ENABLED  (chat session index will be merged)" -ForegroundColor Green
+}
 Write-Host ""
 
 # ---------------------------------------------------------------------------
@@ -275,6 +431,22 @@ foreach ($folder in $allFolders) {
         Write-Host "    (no history files found in old folder)" -ForegroundColor DarkGray
     } else {
         Write-Host "    Copied: $workspaceMigrated  |  Skipped (already exist): $workspaceSkipped"
+    }
+
+    # Migrate chat session index from state.vscdb so VS Code can discover the sessions
+    if ($nodeExe -and $sqliteModule -and -not $WhatIfPreference) {
+        $oldDb = Join-Path $folder.FullName "state.vscdb"
+        $newDb = Join-Path $newFolder      "state.vscdb"
+        Write-Host "    Merging state.vscdb..." -ForegroundColor DarkCyan
+        Invoke-StateDatabaseMigration `
+            -OldDbPath       $oldDb `
+            -NewDbPath       $newDb `
+            -OldPathPrefix   $OldPathPrefix `
+            -NewPathPrefix   $NewPathPrefix `
+            -NodeExe         $nodeExe `
+            -SqliteModulePath $sqliteModule
+    } elseif ($WhatIfPreference -and $nodeExe -and $sqliteModule) {
+        Write-Host "    WHATIF state.vscdb: would merge chat.ChatSessionStore.index and related keys" -ForegroundColor Yellow
     }
 
     Write-Host ""
