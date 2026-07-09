@@ -10,8 +10,10 @@
 
 ```powershell
 cd C:\IGTTools\github\vscode-workspace-migrator
-.\Migrate-VSCodeWorkspaceHistory.ps1 -OldPathPrefix "C:\OldFolderName" -NewPathPrefix "C:\NewFolderName"
+powershell -ExecutionPolicy Bypass -File .\Migrate-VSCodeWorkspaceHistory.ps1 -OldPathPrefix "C:\OldFolderName" -NewPathPrefix "C:\NewFolderName"
 ```
+
+> **Getting a security error?** The `-ExecutionPolicy Bypass` flag above bypasses the script signing requirement for this one invocation only — it does not change any system settings.
 
 3. Reopen VS Code — your chat history will be restored
 
@@ -22,7 +24,7 @@ cd C:\IGTTools\github\vscode-workspace-migrator
 **Not sure it'll work?** Do a safe test run first (no real files touched):
 
 ```powershell
-.\Migrate-VSCodeWorkspaceHistory.ps1 -OldPathPrefix "C:\OldFolderName" -NewPathPrefix "C:\NewFolderName" -TestMode
+powershell -ExecutionPolicy Bypass -File .\Migrate-VSCodeWorkspaceHistory.ps1 -OldPathPrefix "C:\OldFolderName" -NewPathPrefix "C:\NewFolderName" -TestMode
 ```
 
 See `README.md` for full parameter reference.

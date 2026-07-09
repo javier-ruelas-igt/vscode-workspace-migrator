@@ -8,12 +8,14 @@ Use this script when your top-level work directory has been renamed and you want
 - **Node.js** in your PATH (required for database migration — see [How It Works](#how-it-works))
 - **VS Code must be fully closed** before running the real migration (the script will warn you if it isn't)
 
+> **Execution policy error?** If PowerShell blocks the script with "not digitally signed", use `powershell -ExecutionPolicy Bypass -File .\Migrate-VSCodeWorkspaceHistory.ps1 ...` — this bypasses signing for that one invocation only and does not change any system settings.
+
 ## Quick Start
 
 ### 1. Test first (safe — never touches real files)
 
 ```powershell
-.\Migrate-VSCodeWorkspaceHistory.ps1 `
+powershell -ExecutionPolicy Bypass -File .\Migrate-VSCodeWorkspaceHistory.ps1 `
     -OldPathPrefix "C:\OldFolderName" `
     -NewPathPrefix "C:\NewFolderName" `
     -TestMode
@@ -24,7 +26,7 @@ Inspect the sandbox output at `%TEMP%\VSCodeMigrateTest` to verify results.
 ### 2. Close VS Code completely, then run the real migration
 
 ```powershell
-.\Migrate-VSCodeWorkspaceHistory.ps1 `
+powershell -ExecutionPolicy Bypass -File .\Migrate-VSCodeWorkspaceHistory.ps1 `
     -OldPathPrefix "C:\OldFolderName" `
     -NewPathPrefix "C:\NewFolderName"
 ```
